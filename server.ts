@@ -31,6 +31,14 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+// CORS Middleware for Mobile Admin
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+  next();
+});
+
 const db = new Database("messages.db");
 db.exec(`
   CREATE TABLE IF NOT EXISTS processed_messages (id TEXT PRIMARY KEY, number TEXT, service TEXT, otp TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
@@ -47,31 +55,12 @@ let config: any = {
   ADMIN_ID: 8197284774,
   POLLING_ENABLED: true,
   POLLING_INTERVAL: 60000,
-  UI_EMOJIS: {
-    header: "5424972470023104089",
-    time: "5147657255037961755",
-    country: "5447410659077661506",
-    service: "5397733817496647230",
-    number: "5282843764451195532",
-    otp: "5397731992135545615",
-    message: "5443038326535759644",
-    footer: "5796504875047063769"
-  },
-  UI_LABELS: {
-    header: "OTP RECEIVED",
-    time: "Time",
-    country: "Country",
-    service: "Service",
-    number: "Number",
-    otp: "OTP",
-    message: "Full Message",
-    footer: "POWERED BY DXA UNIVERSE"
-  }
+  UI_EMOJIS: { header: "5424972470023104089", time: "5147657255037961755", country: "5447410659077661506", service: "5397733817496647230", number: "5282843764451195532", otp: "5397731992135545615", message: "5443038326535759644", footer: "5796504875047063769" },
+  UI_LABELS: { header: "OTP RECEIVED", time: "Time", country: "Country", service: "Service", number: "Number", otp: "OTP", message: "Full Message", footer: "POWERED BY DXA UNIVERSE" }
 };
 
 // Track current tokens to detect changes
 let currentNumberToken = "";
-let currentMainToken = "";
 
 // User State Management
 const userStates = new Map<number, any>();
@@ -112,20 +101,14 @@ async function handleNumberBot() {
     const isAdmin = chatId === adminId;
     const token = config.NUMBER_BOT_TOKEN;
 
-    // Register User
     db.prepare("INSERT OR REPLACE INTO bot_users (id, username, first_name) VALUES (?, ?, ?)").run(chatId, msg.from.username, msg.from.first_name);
-
-    const btnGet = config.UI_LABELS?.btn_get || "📱 Get Number";
-    const btnChannel = config.UI_LABELS?.btn_channel || "📢 Channel";
 
     if (text === "/start" || text === "🔙 Back") {
       userStates.delete(chatId);
-      const buttons = [[btnGet, btnChannel]];
+      const buttons = [["📱 Get Number", "📢 Channel"]];
       if (isAdmin) buttons.push(["🛠 Admin Panel"]);
       
-      const headerEmoji = getEmojiTag(config.UI_EMOJIS?.header, "💎");
-      const footerEmoji = getEmojiTag(config.UI_EMOJIS?.footer, "✨");
-      const welcomeText = `${headerEmoji} <b>${config.UI_LABELS?.welcome || "Welcome to DXA Number Bot!"}</b>\n\n${footerEmoji} Select an option below:`;
+      const welcomeText = `<b>Welcome to DXA Number Bot!</b>\n\nSelect an option below:`;
       await sendBotMessage(chatId, welcomeText, buttons);
       return;
     }
@@ -135,26 +118,24 @@ async function handleNumberBot() {
       return;
     }
 
-    if (text === btnGet) {
+    if (text === "📱 Get Number") {
       await sendInlineServiceSelection(chatId);
       return;
     }
 
-    // Admin Upload Logic
     if (isAdmin && msg.document && msg.document.file_name.endsWith(".txt")) {
       const state = userStates.get(chatId);
       if (state?.action === "uploading_numbers") {
         const fileId = msg.document.file_id;
-        const fileName = msg.document.file_name;
         try {
           const fileResponse = await axios.get(`https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`);
           const filePath = fileResponse.data.result.file_path;
           const downloadResponse = await axios.get(`https://api.telegram.org/file/bot${token}/${filePath}`);
           const numbers = downloadResponse.data.split(/\r?\n/).filter((n: string) => n.trim().length > 0);
-          userStates.set(chatId, { action: "awaiting_service_for_upload", numbers, fileName, fileId });
+          userStates.set(chatId, { action: "awaiting_service_for_upload", numbers, fileName: msg.document.file_name, fileId });
           await sendBotMessage(chatId, `📂 <b>File received:</b> ${numbers.length} numbers found.\n\n✍️ Please <b>type</b> the service name:`, [["🔙 Back"]]);
         } catch (e) {
-          await sendBotMessage(chatId, "❌ <b>Error processing file.</b>", [["🔙 Back"]]);
+          await sendBotMessage(chatId, "❌ Error processing file.", [["🔙 Back"]]);
         }
         return;
       }
@@ -188,16 +169,14 @@ async function handleNumberBot() {
 
     if (data === "main_menu") {
       await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-        chat_id: chatId,
-        text: "Select an option below:",
-        reply_markup: { keyboard: [[config.UI_LABELS?.btn_get || "📱 Get Number"], ["🔙 Back"]], resize_keyboard: true }
+        chat_id: chatId, text: "Select an option:",
+        reply_markup: { keyboard: [["📱 Get Number"], ["🔙 Back"]], resize_keyboard: true }
       });
       return;
     }
 
     if (data.startsWith("svc_")) {
-      const service = data.replace("svc_", "");
-      await sendInlineCountrySelection(chatId, service);
+      await sendInlineCountrySelection(chatId, data.replace("svc_", ""));
       return;
     }
 
@@ -209,7 +188,7 @@ async function handleNumberBot() {
 
     if (data === "admin_upload") {
       userStates.set(chatId, { action: "uploading_numbers" });
-      await sendBotMessage(chatId, "Please upload a .txt file containing the numbers.", [["🔙 Back"]]);
+      await sendBotMessage(chatId, "Please upload a .txt file.", [["🔙 Back"]]);
     }
   }
 
@@ -220,39 +199,17 @@ async function handleNumberBot() {
       await sendBotMessage(chatId, "❌ No numbers available.", [["🔙 Back"]]);
       return;
     }
-    const keyboard = {
-      inline_keyboard: dbServices.map(s => {
-        const svcInfo = config.SERVICES?.[s.service.toLowerCase()] || { name: s.service.toUpperCase() };
-        const icon = getEmojiTag(svcInfo.emojiId, "⚙️");
-        return [{ text: `${icon} ${svcInfo.name}`, callback_data: `svc_${s.service}` }];
-      })
-    };
+    const keyboard = { inline_keyboard: dbServices.map(s => [{ text: `⚙️ ${s.service}`, callback_data: `svc_${s.service}` }]) };
     keyboard.inline_keyboard.push([{ text: "🔙 Back", callback_data: "main_menu" }]);
-    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-      chat_id: chatId,
-      text: "✨ <b>Select Service:</b>",
-      parse_mode: "HTML",
-      reply_markup: keyboard
-    });
+    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, { chat_id: chatId, text: "✨ <b>Select Service:</b>", parse_mode: "HTML", reply_markup: keyboard });
   }
 
   async function sendInlineCountrySelection(chatId: number, service: string) {
     const token = config.NUMBER_BOT_TOKEN;
     const dbCountries = db.prepare("SELECT DISTINCT country FROM numbers WHERE service = ? AND status = 'available'").all(service);
-    const keyboard = {
-      inline_keyboard: dbCountries.map(c => {
-        const cntInfo = config.COUNTRIES?.[c.country] || { name: c.country, flag: "🌍" };
-        const icon = getEmojiTag(cntInfo.emojiId, cntInfo.flag);
-        return [{ text: `${icon} ${cntInfo.name}`, callback_data: `get_${service}_${c.country}` }];
-      })
-    };
+    const keyboard = { inline_keyboard: dbCountries.map(c => [{ text: `🌍 ${c.country}`, callback_data: `get_${service}_${c.country}` }]) };
     keyboard.inline_keyboard.push([{ text: "🔙 Back", callback_data: "main_menu" }]);
-    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-      chat_id: chatId,
-      text: `🌍 <b>Select Country for ${service}:</b>`,
-      parse_mode: "HTML",
-      reply_markup: keyboard
-    });
+    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, { chat_id: chatId, text: `🌍 <b>Select Country for ${service}:</b>`, parse_mode: "HTML", reply_markup: keyboard });
   }
 
   async function handleNumberAssignment(chatId: number, service: string, country: string) {
@@ -264,44 +221,19 @@ async function handleNumberBot() {
     }
     db.prepare("UPDATE numbers SET status = 'used', assigned_to = ? WHERE id = ?").run(chatId, num.id);
     const text = `📱 <b>Your Number:</b> <code>${num.number}</code>\n🌍 <b>Country:</b> ${num.country}\n⚙️ <b>Service:</b> ${num.service}`;
-    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-      chat_id: chatId,
-      text: text,
-      parse_mode: "HTML",
-      reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "main_menu" }]] }
-    });
+    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, { chat_id: chatId, text: text, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "main_menu" }]] } });
   }
 
   async function sendAdminPanel(chat_id: number) {
     const token = config.NUMBER_BOT_TOKEN;
-    const keyboard = {
-      inline_keyboard: [
-        [{ text: "📤 Upload Numbers", callback_data: "admin_upload" }],
-        [{ text: "📊 Statistics", callback_data: "admin_stats" }],
-        [{ text: "🗑 Delete Files", callback_data: "admin_delete" }],
-        [{ text: "📢 Broadcast", callback_data: "admin_broadcast" }]
-      ]
-    };
-    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-      chat_id: chat_id,
-      text: "🛠 <b>Admin Control Panel</b>",
-      parse_mode: "HTML",
-      reply_markup: keyboard
-    });
+    const keyboard = { inline_keyboard: [[{ text: "📤 Upload Numbers", callback_data: "admin_upload" }], [{ text: "📊 Statistics", callback_data: "admin_stats" }]] };
+    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, { chat_id: chat_id, text: "🛠 <b>Admin Panel</b>", parse_mode: "HTML", reply_markup: keyboard });
   }
 
   async function sendBotMessage(chatId: number, text: string, buttons: string[][]) {
     const token = config.NUMBER_BOT_TOKEN;
-    const keyboard = {
-      keyboard: buttons.map(row => row.map(btn => ({ text: btn }))),
-      resize_keyboard: true
-    };
-    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-      chat_id: chatId,
-      text: text,
-      parse_mode: "HTML",
-      reply_markup: keyboard
-    });
+    const keyboard = { keyboard: buttons.map(row => row.map(btn => ({ text: btn }))), resize_keyboard: true };
+    await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, { chat_id: chatId, text: text, parse_mode: "HTML", reply_markup: keyboard });
   }
 
   getUpdates();
@@ -413,7 +345,7 @@ ${getEmojiTag(config.UI_EMOJIS?.footer, "🧑‍💻")} <b>${config.UI_LABELS?.f
 
           await sendTelegramMessage(telegramText);
           
-          // Forward to assigned user
+          // Forward to assigned user if applicable
           const cleanNum = msg.num.replace(/\D/g, "");
           const assigned = db.prepare("SELECT assigned_to FROM numbers WHERE number LIKE ?").get(`%${cleanNum}%`);
           if (assigned?.assigned_to) {
